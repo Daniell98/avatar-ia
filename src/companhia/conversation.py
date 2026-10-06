@@ -8,11 +8,14 @@ import uuid
 from pathlib import Path
 
 from .audio import Audio, AudioError
-from .config import Settings, api_key
+from .config import Settings, api_key, elevenlabs_key
+from .elevenlabs_speech import ElevenLabs
 from .memory import Store
 from .personality import context
 from .proactivity import Proactivity
 from .providers import ContractSpeech, MockProvider, ProviderError, Roteia, WindowsSpeech
+from .roteia_speech import RoteiaSpeech
+from .tone import apply_tone, tone_request
 
 
 class Conversation:
@@ -40,6 +43,15 @@ class Conversation:
             self.speech = WindowsSpeech(settings.voice, settings.timeout)
         elif settings.speech == "contract":
             self.speech = MockProvider() if settings.provider == "mock" else ContractSpeech(provider)
+        elif settings.speech == "roteia":
+            self.speech = MockProvider() if settings.provider == "mock" else RoteiaSpeech(provider, folder)
+        elif settings.speech == "eleven":
+            # Provedor próprio: independe da Roteia, inclusive no modo simulado de chat.
+            self.speech = (
+                MockProvider()
+                if settings.provider == "mock"
+                else ElevenLabs(settings, elevenlabs_key(folder))
+            )
         else:
             self.speech = None
         self.proactivity = Proactivity(
@@ -98,6 +110,8 @@ class Conversation:
         message_state = "error"
         capture_end = None
         metrics = {}
+        current_message_id = None
+        turn_begin = time.monotonic()
         try:
             if self.proactivity.mode == "paused":
                 return
@@ -130,9 +144,12 @@ class Conversation:
                 self.check(generation)
                 self.proactivity.activity(time.monotonic())
                 id = self.store.message(turn, "user", text)
+                current_message_id = id
                 self.send(generation, "refresh")
-                if re.search(r"(?:pega mais leve|menos zoeira|sem zoeira|não gostei|nao gostei)", text, re.I):
-                    self.store.set_meta("gentle", "1")
+                tone = tone_request(text)
+                if tone:
+                    apply_tone(self.store, tone)
+                    self.send(generation, "tone", value=tone)
                 silence = re.fullmatch(
                     r"(?:fica em sil[eê]ncio|sil[eê]ncio|n[aã]o puxe assunto|modo foco)[.!]?",
                     text.strip(),
@@ -153,15 +170,20 @@ class Conversation:
                     "INICIATIVA: faça um comentário curto sobre o contexto recente, sem cobrar resposta. "
                     "Se não há algo pertinente, responda exatamente <SILENCIO>. Não infira atividade pelo silêncio."
                 )
-            messages = context(self.store, self.settings, self.folder, text)
-            if proactive:
-                messages.append({"role": "user", "content": text})
             # Resumo extrativo local: nenhuma chamada adicional nem promoção a memória.
             recent = self.store.recent(40, for_context=True)
             if len(recent) > self.settings.recent_messages:
                 older = recent[: -self.settings.recent_messages]
                 excerpt = "\n".join(f"{row['role']}: {row['content'][:180]}" for row in older)[-2000:]
                 self.store.set_meta("summary", excerpt)
+            messages = context(
+                self.store,
+                self.settings,
+                self.folder,
+                text,
+                current_message_id=current_message_id,
+                proactive=proactive,
+            )
             self.send(generation, "state", value="respondendo")
             returned, usage = "", {}
             call_id = self.store.start_call(
@@ -172,6 +194,8 @@ class Conversation:
                 self.settings.max_tokens_day,
             )
             begin = time.monotonic()
+            if proactive:
+                self.proactivity.attempted(begin)
             call_state = "error"
             if not proactive:
                 response_id = self.store.message(turn, "assistant", "", "pending")
@@ -210,18 +234,23 @@ class Conversation:
                     message_state = "complete"
                     return
                 response_id = self.store.message(turn, "assistant", answer, "pending")
+                self.proactivity.delivered()
                 self.send(generation, "refresh")
             if self.speech:
                 try:
                     self.send(generation, "state", value="preparando voz")
-                    model = (
-                        "windows/System.Speech"
-                        if self.settings.speech == "windows"
-                        else self.settings.speech_model
-                    )
-                    spoken = await self.call(
-                        generation, "speech", model, lambda: self.speech.synthesize(answer)
-                    )
+                    model = {
+                        "windows": "windows/System.Speech",
+                        "eleven": f"elevenlabs/{self.settings.eleven_model}",
+                    }.get(self.settings.speech, self.settings.speech_model)
+                    synthesis_begin = time.monotonic()
+                    try:
+                        spoken = await self.call(
+                            generation, "speech", model, lambda: self.speech.synthesize(answer)
+                        )
+                    finally:
+                        synthesis_end = time.monotonic()
+                        metrics["synthesis_s"] = synthesis_end - synthesis_begin
                     self.check(generation)
                     if proactive and (self.proactivity.mode != "company" or editing()):
                         raise asyncio.CancelledError()
@@ -231,6 +260,8 @@ class Conversation:
                     self.send(generation, "state", value="falando")
 
                     def started():
+                        metrics["turn_to_playback_s"] = time.monotonic() - turn_begin
+                        metrics["synthesis_end_to_playback_s"] = time.monotonic() - synthesis_end
                         if capture_end:
                             metrics["recording_to_voice_s"] = time.monotonic() - capture_end
 
@@ -238,12 +269,16 @@ class Conversation:
                         spoken.audio, self.settings, started, valid=lambda: self.current(generation)
                     )
                     self.check(generation)
-                except (ProviderError, AudioError, TimeoutError, OSError):
+                except (ProviderError, AudioError, TimeoutError, OSError) as error:
                     self.send(
                         generation,
                         "error",
-                        message="Não foi possível produzir ou tocar a voz. "
-                        "O texto está disponível. Confira voz, contrato e dispositivo nas configurações.",
+                        message=(
+                            str(error)
+                            if isinstance(error, (ProviderError, AudioError))
+                            else "Não foi possível produzir ou tocar a voz."
+                        )
+                        + " O texto está disponível.",
                     )
             message_state = "complete"
         except asyncio.CancelledError:

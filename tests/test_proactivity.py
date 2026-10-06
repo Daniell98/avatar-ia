@@ -11,6 +11,7 @@ def test_opt_in_busy_editing_and_one_unanswered():
     assert not p.eligible(100, False, False, False)
     assert p.eligible(100, False, False, True)
     p.started(100)
+    p.delivered()
     assert not p.eligible(800, False, False, True)
     p.activity(801)
     assert not p.eligible(890, False, False, True)

@@ -11,6 +11,8 @@ from .audio import AudioError, devices
 from .config import Settings, api_key, data_dir, personality_file
 from .conversation import Conversation
 from .memory import Store
+from .providers import Roteia
+from .roteia_speech import RoteiaSpeech
 
 
 def local_diagnostic(folder: Path, settings: Settings) -> dict:
@@ -32,7 +34,11 @@ def local_diagnostic(folder: Path, settings: Settings) -> dict:
         "devices": available,
         "personality": str(personality_file(folder)),
         "api_calls": 0,
-        "voice_api_validation": "pendente de contrato confirmado e interação real",
+        "voice_api_validation": (
+            "schema observado em diagnóstico real; audição/conversa requerem teste manual"
+            if RoteiaSpeech(Roteia(settings, ""), folder).validated()
+            else "não testado: execute uma amostra explícita --real --probe-audio --speech-text"
+        ),
     }
 
 
@@ -77,22 +83,34 @@ async def real_diagnostic(folder: Path, settings: Settings, args):
                 lambda: engine.transcription.transcribe(file.read_bytes()),
             )
             print(transcript.text)
-        elif args.speech_text:
-            from .providers import ContractSpeech, ProviderError
-
-            if settings.speech != "contract":
-                raise ProviderError(
-                    "Configure speech=contract e um contrato confirmado antes do teste de voz API."
-                )
-            assert isinstance(engine.speech, ContractSpeech)
-            engine.speech.contract()  # Valida antes de reservar uma chamada.
-            result = await engine.call(
-                1, "speech", settings.speech_model, lambda: engine.speech.synthesize(args.speech_text)
+        elif args.probe_stream_text:
+            speech = RoteiaSpeech(Roteia(settings, engine.llm.key), folder, probing=True)
+            control = await speech.probe_text_stream(
+                stream=not args.no_stream, model=args.probe_model or ""
             )
-            print("Texto associado ao áudio:", result.text)
-            await engine.audio.play(result.audio, settings)
+            print(json.dumps(control, ensure_ascii=False))
+        elif args.speech_text:
+            from .diagnostics import speech_sample
+
+            settings = replace(
+                settings, speech="roteia", voice=args.voice if args.voice is not None else settings.voice
+            )
+            engine = Conversation(settings, store, folder, emit, lambda gen: True)
+
+            def report(event):
+                if event["kind"] == "transcript":
+                    print("Texto associado à fala (para comparação):", event["text"])
+                else:
+                    print(json.dumps(event["values"], ensure_ascii=False))
+
+            await speech_sample(
+                engine, args.speech_text, probe=args.probe_audio, play=not args.no_play, emit=report
+            )
         else:
-            print("Escolha --text, --wav ou --speech-text para executar uma amostra real.", file=sys.stderr)
+            print(
+                "Escolha --text, --wav, --speech-text ou --probe-stream-text para uma amostra real.",
+                file=sys.stderr,
+            )
             return 1
         return 1 if errors else 0
     except Exception as error:
@@ -123,8 +141,29 @@ def main():
     samples = diagnostic.add_mutually_exclusive_group()
     samples.add_argument("--text", help="Texto curto para uma chamada real de chat")
     samples.add_argument("--wav", help="Amostra WAV, até 30 s, para transcrição real")
+    samples.add_argument("--speech-text", help="Uma amostra de voz Roteia com texto curto, sem retry")
     samples.add_argument(
-        "--speech-text", help="Amostra de voz API, exige contrato confirmado nas configurações"
+        "--probe-stream-text",
+        action="store_true",
+        help="Controle: stream de texto no modelo de voz, sem áudio, para isolar a falha",
+    )
+    diagnostic.add_argument(
+        "--probe-audio",
+        action="store_true",
+        help="Testa explicitamente a hipótese de schema upstream no gateway",
+    )
+    diagnostic.add_argument("--voice", help="Voz da amostra (vazio/configuração: alloy)")
+    diagnostic.add_argument(
+        "--no-play", action="store_true", help="Valida a amostra sem reproduzir; áudio descartado"
+    )
+    diagnostic.add_argument(
+        "--no-stream",
+        action="store_true",
+        help="No controle de texto, repete o exemplo publicado pela Roteia, sem stream",
+    )
+    diagnostic.add_argument(
+        "--probe-model",
+        help="Modelo do controle de texto, uma amostra por execução (padrão: o de voz)",
     )
     args = parser.parse_args()
     folder = data_dir()
@@ -139,6 +178,12 @@ def main():
     if args.mock:
         settings = replace(settings, provider="mock", speech="off")
     if args.command == "diagnostico":
+        if (args.probe_audio or args.voice is not None or args.no_play) and not (
+            args.real and args.speech_text
+        ):
+            parser.error("--probe-audio, --voice e --no-play exigem --real e --speech-text.")
+        if (args.no_stream or args.probe_model) and not (args.real and args.probe_stream_text):
+            parser.error("--no-stream e --probe-model exigem --real e --probe-stream-text.")
         if args.real:
             if args.mock:
                 parser.error("--mock e --real não podem ser combinados.")
@@ -147,7 +192,7 @@ def main():
             if args.speech_text and len(args.speech_text) > 300:
                 parser.error("Use até 300 caracteres na amostra de voz.")
             sys.exit(asyncio.run(real_diagnostic(folder, settings, args)))
-        if args.text or args.wav or args.speech_text:
+        if args.text or args.wav or args.speech_text or args.probe_stream_text:
             parser.error("Amostras exigem --real; sem essa opção o diagnóstico é apenas local.")
         print(json.dumps(local_diagnostic(folder, settings), ensure_ascii=False, indent=2))
         return

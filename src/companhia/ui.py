@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import time
 from dataclasses import replace
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
@@ -30,10 +33,14 @@ from PySide6.QtWidgets import (
 )
 
 from .audio import AudioError, devices
-from .config import api_key, personality_file
+from .config import api_key, apply_default_personality, default_personality, personality_file
 from .conversation import Conversation
 from .memory import Store
+from .proactivity import EditingActivity
+from .providers import ProviderError, Roteia
+from .roteia_speech import RoteiaSpeech
 from .tasks import Tasks
+from .tone import apply_tone
 
 
 class Bridge(QObject):
@@ -54,6 +61,7 @@ class MainWindow(QMainWindow):
         self.state = "disponível"
         self.metrics = {}
         self.devices_cache = []
+        self.edit_activity = EditingActivity()
         self.setWindowTitle(f"{settings.name} · assistente pessoal")
         self.resize(1050, 800)
         self.setMinimumSize(760, 600)
@@ -119,7 +127,14 @@ class MainWindow(QMainWindow):
                 "off": "voz desligada",
                 "windows": "voz local do Windows",
                 "contract": "voz por API com contrato local",
-            }[self.settings.speech]
+                "eleven": f"voz ElevenLabs · {self.settings.eleven_model}",
+                "roteia": "voz Roteia · "
+                + (
+                    "schema observado em diagnóstico real"
+                    if RoteiaSpeech(Roteia(self.settings, ""), self.folder).validated()
+                    else "amostra ainda não validada"
+                ),
+            }.get(self.settings.speech, self.settings.speech)
             value = f"Roteia · {self.settings.chat_model} · {voice}"
         self.provider_label.setText(value)
 
@@ -135,6 +150,7 @@ class MainWindow(QMainWindow):
         )
         self.input.setMaximumHeight(85)
         self.input.textChanged.connect(self.user_editing)
+        self.input.installEventFilter(self)
         box.addWidget(self.input)
         buttons = QHBoxLayout()
         self.send_button = QPushButton("Enviar texto")
@@ -215,6 +231,15 @@ class MainWindow(QMainWindow):
             self.fields[key] = field
             form.addRow(label, field)
 
+        def decimal(key, label, low, high):
+            field = QDoubleSpinBox()
+            field.setRange(low, high)
+            field.setSingleStep(0.05)
+            field.setDecimals(2)
+            field.setValue(getattr(self.settings, key))
+            self.fields[key] = field
+            form.addRow(label, field)
+
         def combo(key, label, options):
             field = QComboBox()
             for title, value in options:
@@ -247,13 +272,23 @@ class MainWindow(QMainWindow):
             "Saída de voz",
             [
                 ("Desligada", "off"),
+                ("ElevenLabs · pt-BR", "eleven"),
                 ("Windows · local / alternativa", "windows"),
-                ("API · exige contrato confirmado", "contract"),
+                ("Roteia · validar amostra antes do uso", "roteia"),
+                *([("Contrato externo · legado", "contract")] if self.settings.speech == "contract" else []),
             ],
         )
-        text("voice", "Voz (vazio = pt-BR no Windows)")
+        text("voice", "Voz (vazio = pt-BR no Windows / alloy na API)")
+        if self.settings.speech == "eleven":
+            text("eleven_voice", "ID da voz ElevenLabs")
+            text("eleven_model", "Modelo ElevenLabs")
+            decimal("eleven_stability", "Estabilidade (baixa = mais expressiva)", 0.0, 1.0)
+            decimal("eleven_similarity", "Semelhança com a voz original", 0.0, 1.0)
+            decimal("eleven_style", "Estilo (exagero da entonação)", 0.0, 1.0)
+            decimal("eleven_speed", "Velocidade da fala", 0.7, 1.2)
         combo("audio_format", "Formato de voz", [("WAV", "wav")])
-        text("speech_contract", "Caminho absoluto do contrato de voz API")
+        if self.settings.speech == "contract":
+            text("speech_contract", "Contrato legado já configurado")
         number("timeout", "Timeout por requisição (s)", 5, 300)
         combo("input_device", "Microfone", [("Padrão do Windows", None)])
         combo("output_device", "Saída de áudio", [("Padrão do Windows", None)])
@@ -277,9 +312,18 @@ class MainWindow(QMainWindow):
         self.persona = QPlainTextEdit(personality_file(self.folder).read_text(encoding="utf-8"))
         self.persona.setMinimumHeight(210)
         form.addRow("Personalidade (também editável em arquivo)", self.persona)
+        self.persona.installEventFilter(self)
+        self.tone_mode = QComboBox()
+        self.tone_mode.addItem("Normal · conforme os quatro controles", "normal")
+        self.tone_mode.addItem("Mais suave · pedido de menos zoeira", "gentle")
+        self.tone_mode.setCurrentIndex(1 if self.store.get_meta("gentle") == "1" else 0)
+        form.addRow("Tom pedido por você", self.tone_mode)
+        review = QPushButton("Revisar padrão atualizado de personalidade")
+        review.clicked.connect(self.review_personality)
+        form.addRow(review)
         form.addRow(
             QLabel(
-                "Voz API: o schema público está pendente. Consulte docs/contratos.md. "
+                "Voz Roteia: execute o diagnóstico de uma amostra para validar compatibilidade. "
                 "Limites de chamadas/tokens não garantem um teto financeiro exato."
             )
         )
@@ -315,10 +359,14 @@ class MainWindow(QMainWindow):
         self.cost = QLabel("Custo: desconhecido. Nenhum valor confirmado pelo gateway.")
         self.cost.setWordWrap(True)
         box.addWidget(self.cost)
+        self.sample_text = QLabel("Texto associado à amostra de voz aparecerá aqui para comparação.")
+        self.sample_text.setWordWrap(True)
+        box.addWidget(self.sample_text)
         row = QHBoxLayout()
         for title, callback in [
             ("Diagnóstico local · sem API", self.local_diagnostic),
             ("Teste real · uma amostra de texto", self.real_sample),
+            ("Testar voz Roteia · uma amostra", self.real_voice_sample),
         ]:
             button = QPushButton(title)
             button.clicked.connect(callback)
@@ -327,10 +375,13 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(page, "Diagnóstico")
 
     def update_editing(self):
-        # Campo com rascunho ou foco em editor impede iniciativa.
-        focus = self.focusWidget()
-        editing = bool(self.input.toPlainText().strip()) or isinstance(focus, (QLineEdit, QPlainTextEdit))
-        if editing or self.tabs.currentIndex() in {1, 2}:
+        # Foco vazio/parado não bloqueia indefinidamente. Abas de edição e diálogos são protegidos.
+        editing = self.edit_activity.blocked(
+            time.monotonic(),
+            bool(self.input.toPlainText().strip()),
+            self.tabs.currentIndex() in {1, 2} or QApplication.activeModalWidget() is not None,
+        )
+        if editing:
             self.tasks.editing.set()
         else:
             self.tasks.editing.clear()
@@ -338,12 +389,33 @@ class MainWindow(QMainWindow):
     def user_editing(self):
         self.update_editing()
         # Se uma iniciativa está sendo gerada, editar ganha prioridade imediatamente.
-        if (
-            self.input.toPlainText().strip()
-            and self.tasks.engine.proactivity.waiting_reply
-            and self.state not in {"disponível", "pausado"}
-        ):
+        if self.input.toPlainText().strip() and self.tasks.is_proactive():
             self.interrupt()
+
+    def eventFilter(self, obj, event):
+        if event.type() in {QEvent.Type.KeyPress, QEvent.Type.InputMethod}:
+            self.edit_activity.typed(time.monotonic())
+            self.update_editing()
+            if self.tasks.is_proactive():
+                self.interrupt()
+        return super().eventFilter(obj, event)
+
+    def review_personality(self):
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Revisar personalidade atualizada")
+        dialog.setText(
+            "O padrão atualizado aparece em Mostrar detalhes. Aplicar preserva a versão "
+            "atual e o rascunho em cópias locais. Nome e intensidades continuam configuráveis."
+        )
+        dialog.setDetailedText(default_personality())
+        apply = dialog.addButton("Aplicar padrão com cópia", QMessageBox.ButtonRole.AcceptRole)
+        dialog.addButton("Manter minha personalidade", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() == apply:
+            self.interrupt()
+            backup = apply_default_personality(self.folder, draft=self.persona.toPlainText())
+            self.persona.setPlainText(default_personality())
+            self.diagnostic.appendPlainText("Padrão aplicado. Versão anterior preservada em " + str(backup))
 
     def change_mode(self):
         value = self.mode.currentData()
@@ -414,6 +486,12 @@ class MainWindow(QMainWindow):
                 )
         elif kind == "mode":
             self.mode.setCurrentIndex(self.mode.findData(event["value"]))
+        elif kind == "tone":
+            self.tone_mode.setCurrentIndex(self.tone_mode.findData(event["value"]))
+        elif kind == "sample_text":
+            self.sample_text.setText("Texto associado à fala: " + event["text"])
+        elif kind == "voice_validated":
+            self.update_provider_label()
         elif kind == "diagnostic":
             self.diagnostic.appendPlainText(event["text"])
             self.devices_cache = event.get("devices", self.devices_cache)
@@ -440,7 +518,8 @@ class MainWindow(QMainWindow):
         self.memory_table.setRowCount(len(memories))
         for i, memory in enumerate(memories):
             for j, key in enumerate(["id", "content", "kind", "source", "updated"]):
-                self.memory_table.setItem(i, j, QTableWidgetItem(str(memory[key])))
+                value = self.store.source_label(memory[key]) if key == "source" else str(memory[key])
+                self.memory_table.setItem(i, j, QTableWidgetItem(value))
         calls = self.store.rows("SELECT * FROM calls ORDER BY id DESC LIMIT 50")
         self.calls.setRowCount(len(calls))
         for i, call in enumerate(calls):
@@ -525,7 +604,11 @@ class MainWindow(QMainWindow):
             values[key] = (
                 field.currentData()
                 if isinstance(field, QComboBox)
-                else (field.value() if isinstance(field, QSpinBox) else field.text().strip())
+                else (
+                    field.value()
+                    if isinstance(field, (QSpinBox, QDoubleSpinBox))
+                    else field.text().strip()
+                )
             )
         try:
             settings = replace(self.settings, **values)
@@ -545,6 +628,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Configurações", str(error))
             return
         self.interrupt()
+        apply_tone(self.store, self.tone_mode.currentData())
         self.settings = settings
 
         def rebuild():
@@ -656,6 +740,45 @@ class MainWindow(QMainWindow):
         if ok and sample.strip():
             self.input.setPlainText(sample)
             self.send_text()
+
+    def real_voice_sample(self):
+        if self.settings.provider != "roteia" or self.mode.currentData() == "paused":
+            QMessageBox.information(self, "Teste de voz", "Selecione Roteia e saia do modo Pausado primeiro.")
+            return
+        sample, ok = QInputDialog.getText(
+            self,
+            "Uma amostra de voz · pode gerar cobrança",
+            "Texto curto (até 300 caracteres). Testa o schema upstream, ainda não confirmado no gateway. "
+            "Será feita uma única chamada, sem retry. Salve modelo e voz antes de testar:",
+        )
+        if not ok or not sample.strip():
+            return
+        if len(sample) > 300:
+            QMessageBox.information(self, "Teste de voz", "Use até 300 caracteres na amostra.")
+            return
+        self.state = "preparando voz"
+        self.update_state()
+
+        async def run(gen):
+            from .diagnostics import speech_sample
+
+            engine = self.tasks.engine
+
+            def report(event):
+                if event["kind"] == "transcript":
+                    engine.send(gen, "sample_text", text=event["text"])
+                else:
+                    engine.send(gen, "metrics", values=event["values"])
+
+            try:
+                await speech_sample(engine, sample, probe=True, emit=report, generation=gen)
+                engine.send(gen, "voice_validated")
+            except (ProviderError, AudioError) as error:
+                engine.send(gen, "error", message=str(error))
+            finally:
+                engine.send(gen, "state", value="disponível")
+
+        self.tasks.start(run)
 
     def closeEvent(self, event):
         self.timer.stop()

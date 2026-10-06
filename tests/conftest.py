@@ -16,6 +16,7 @@ def no_live_network(monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncClient, "__init__", guarded)
     monkeypatch.setenv("ROTEIA_API_KEY", "test-only-no-real-key")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test-only-no-real-key")
 
 
 @pytest.fixture

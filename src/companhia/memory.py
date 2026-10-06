@@ -22,22 +22,83 @@ class Store:
         self.lock = threading.RLock()
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        # Antes de migrar, mantém uma cópia recuperável do banco, sem recriá-lo.
+        needs_migration = self.db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'"
+        ).fetchone()
+        if needs_migration and "AUTOINCREMENT" not in needs_migration[0].upper():
+            backup_path = path.with_name(path.name + ".before-v2.bak")
+            if not backup_path.exists():
+                with sqlite3.connect(backup_path) as backup:
+                    self.db.backup(backup)
         with self.transaction() as db:
             db.executescript("""
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY, turn TEXT, role TEXT, content TEXT,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, turn TEXT, role TEXT, content TEXT,
                     state TEXT, created TEXT);
                 CREATE TABLE IF NOT EXISTS memories (
-                    id INTEGER PRIMARY KEY, content TEXT, kind TEXT, source TEXT,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT, kind TEXT, source TEXT,
                     created TEXT, updated TEXT, active INTEGER DEFAULT 1);
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
                 CREATE TABLE IF NOT EXISTS calls (
                     id INTEGER PRIMARY KEY, turn TEXT, modality TEXT, requested TEXT,
                     returned TEXT, state TEXT, usage TEXT, created TEXT, elapsed REAL);
+                CREATE TABLE IF NOT EXISTS deleted_messages (id INTEGER PRIMARY KEY, deleted_at TEXT);
             """)
+            self._migrate_ids(db)
             db.execute("UPDATE messages SET state='interrupted' WHERE state='pending'")
             db.execute("UPDATE calls SET state='interrupted' WHERE state='pending'")
+
+    def _migrate_ids(self, db):
+        # DDL e cópia transacionais. IDs e fontes existentes permanecem intactos.
+        db.execute("BEGIN IMMEDIATE")
+        for table in ("messages", "memories"):
+            schema = db.execute("SELECT sql FROM sqlite_master WHERE name=?", (table,)).fetchone()[0]
+            if "AUTOINCREMENT" not in schema.upper():
+                new_schema = re.sub(
+                    rf'^CREATE TABLE\s+(?:"{table}"|`{table}`|\[{table}\]|{table})',
+                    f"CREATE TABLE {table}_v2",
+                    schema,
+                    count=1,
+                    flags=re.I,
+                )
+                new_schema = re.sub(
+                    r"INTEGER\s+PRIMARY\s+KEY",
+                    "INTEGER PRIMARY KEY AUTOINCREMENT",
+                    new_schema,
+                    count=1,
+                    flags=re.I,
+                )
+                db.execute(new_schema)
+                db.execute(f"INSERT INTO {table}_v2 SELECT * FROM {table}")
+                db.execute(f"DROP TABLE {table}")
+                db.execute(f"ALTER TABLE {table}_v2 RENAME TO {table}")
+        refs = [row[0] for row in db.execute("SELECT source FROM memories")]
+        message_ids = [int(m[1]) for value in refs if (m := re.match(r"message:(\d+)", value or ""))]
+        memory_ids = [int(m[1]) for value in refs if (m := re.match(r"ui:correction:(\d+)", value or ""))]
+        for id in message_ids:
+            if not db.execute("SELECT 1 FROM messages WHERE id=?", (id,)).fetchone():
+                db.execute("INSERT OR IGNORE INTO deleted_messages VALUES(?,?)", (id, now()))
+        barrier = db.execute("SELECT value FROM meta WHERE key='context_barrier'").fetchone()
+        deleted_max = db.execute("SELECT COALESCE(MAX(id),0) FROM deleted_messages").fetchone()[0]
+        for table, references in [
+            ("messages", message_ids + [int(barrier[0]) if barrier else 0, deleted_max]),
+            ("memories", memory_ids),
+        ]:
+            highest = max([db.execute(f"SELECT COALESCE(MAX(id),0) FROM {table}").fetchone()[0]] + references)
+            row = db.execute("SELECT seq FROM sqlite_sequence WHERE name=?", (table,)).fetchone()
+            if row:
+                db.execute("UPDATE sqlite_sequence SET seq=? WHERE name=?", (max(row[0], highest), table))
+            else:
+                db.execute("INSERT INTO sqlite_sequence(name,seq) VALUES(?,?)", (table, highest))
+        db.execute("INSERT OR REPLACE INTO meta VALUES('schema_version','2')")
+
+    def source_label(self, source: str) -> str:
+        match = re.match(r"message:(\d+)", source)
+        if match and not self.rows("SELECT id FROM messages WHERE id=?", (int(match[1]),)):
+            return source + " (mensagem removida)"
+        return source
 
     @contextmanager
     def transaction(self):
@@ -116,6 +177,7 @@ class Store:
 
     def clear_history(self):
         with self.transaction() as db:
+            db.execute("INSERT OR IGNORE INTO deleted_messages SELECT id,? FROM messages", (now(),))
             db.execute("DELETE FROM messages")
             db.execute("DELETE FROM meta WHERE key IN ('summary','context_barrier')")
 

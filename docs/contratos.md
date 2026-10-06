@@ -1,6 +1,7 @@
 # Decisões e contratos de provedores
 
-Consulta: 05–06/10/2026, ambiente Windows nativo, sem requisições autenticadas.
+Consulta: 05–06/10/2026, ambiente Windows nativo. Uma amostra de áudio autenticada
+foi autorizada na etapa 2; resultado HTTP 400, sem repetir a chamada.
 O snapshot reduzido do catálogo consultado está em `catalogo-selecionado.json`.
 Datas/preços de páginas cacheadas diferiam do catálogo ao vivo; o aplicativo não
 usa esses valores para afirmar cobrança nem fixa preços de áudio a partir deles.
@@ -40,30 +41,62 @@ Fontes: [catálogo público](https://api.roteia.ai/catalog/models),
 [transcrição](https://roteia.ai/modelos/transcricao/),
 [contrato multipart e limite](https://roteia.ai/guias/modelos-de-transcricao-por-api/).
 
-## Síntese por API — pendência concreta
+## Síntese por API — adaptador específico e hipótese verificável
 
 O catálogo e a [página de GPT Audio Mini](https://roteia.ai/modelos/openai/gpt-audio-mini/)
 declaram `text,audio → text,audio` em `chat/completions`. A
 [categoria de áudio](https://roteia.ai/modelos/audio/) também o lista.
 As páginas consultadas não especificam o pedido de saída falada, vozes aceitas,
 formato binário/base64 ou caminhos de áudio e transcrição no JSON. As rotas
-públicas `/openapi.json` e `/docs` da API não puderam ser consultadas. Portanto,
-**não foi inventado `/audio/speech` nem ativado um schema de outro provedor**.
+públicas `/openapi.json` e `/docs` da API retornaram HTTP 403 sem autenticação
+na consulta da etapa 2. Portanto,
+**não foi inventado `/audio/speech`**. Na etapa 2, a hipótese upstream é isolada
+num diagnóstico explicitamente invocado, antes de habilitar conversa.
 
-Evidência necessária para concluir:
+O `RoteiaSpeech` usa os campos documentados no
+[guia upstream de áudio em Chat Completions](https://developers.openai.com/api/docs/guides/audio-chat-completions):
+`model`, `messages`, `modalities: ["text", "audio"]`, `audio.voice` (alloy inicial)
+e `audio.format` (wav). A resposta exige `choices[0].message.audio.data` em base64
+e `choices[0].message.audio.transcript`, além de modelo coerente e conclusão `stop`.
+Esses campos são fundamentados na [referência upstream](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
+mas **a aceitação pelo gateway ainda precisa ser observada**. A página upstream
+do [modelo solicitado](https://developers.openai.com/api/docs/models/gpt-audio-mini)
+não é evidência de streaming ou disponibilidade na Roteia. Não se usa streaming
+de áudio nesta implementação.
 
-1. Exemplo oficial da Roteia, ou confirmação do suporte, do corpo aceito por
-   `chat/completions` para produzir áudio de `openai/gpt-audio-mini`.
-2. Nome de voz válido e formato WAV, com resposta de exemplo mostrando áudio
-   base64 e o texto correspondente àquela fala; unidade de cobrança de áudio.
-3. Uma chamada autenticada curta escolhida pelo operador, com audição e comparação
-   da fala ao texto retornado. Naturalidade/fidelidade não são garantidas pelo ID.
+Diagnóstico, uma amostra por execução:
 
-O adaptador `ContractSpeech` está implementado para esse contrato: não roda sem
-arquivo local com `confirmed: true`, `evidence`, `endpoint: "chat/completions"`,
-`format: "wav"`, `request`, `audio_path` e `transcript_path`. Copie
-`contrato-voz.template.json` para a pasta local de dados, preencha **com o contrato
-confirmado**, configure seu caminho absoluto e escolha Voz API na interface.
+```powershell
+uv run companhia diagnostico --real --probe-audio --voice alloy --speech-text 'Olá, Daniel. Esta é uma amostra curta.'
+```
+
+Pode gerar cobrança. A versão inicial não realizou amostras autenticadas.
+Na etapa 2, a única amostra autorizada foi recusada com HTTP 400 em 4,235 s;
+nenhum parâmetro específico foi informado de forma reconhecida, e não houve
+áudio/modelo retornado/uso para validar. **A hipótese não foi confirmada.**
+`--no-play` valida sem reprodução; a execução padrão permite ouvir/comparar.
+O modelo vem da configuração local, sem varredura de modelos ou tentativas extras.
+Sem `--probe-audio`, o adaptador exige uma observação real anterior da mesma
+URL/modelo/voz/formato. Uma mudança invalida essa autorização técnica.
+
+Um resultado real válido gera `audio-validation.json` com origem
+`manual-real-diagnostic`, data, assinatura de configuração e modelo retornado.
+Fixtures com transporte HTTP simulado são impedidas de criar essa confirmação.
+Áudio/texto não ficam nesse arquivo nem no ledger de amostra. O transcript aparece
+apenas na CLI/interface para comparação. A confirmação é **do schema observado**,
+não certificação de naturalidade, idioma, fidelidade literal ou produto completo.
+
+Pendências específicas se o diagnóstico falhar:
+
+1. Em 400/422, confirmar especificamente `modalities`, `audio.voice` ou
+   `audio.format` (o parâmetro é mostrado se a Roteia informar um campo seguro).
+2. Se só vier texto, confirmar como solicitar `choices[0].message.audio.data`.
+3. Se vier áudio sem transcript, obter o campo de texto associado àquela fala.
+4. Confirmar a unidade de cobrança de áudio; preços de texto não bastam.
+
+O adaptador genérico `ContractSpeech` continua para configurações legadas já
+existentes; ele não é o caminho de configuração da voz Roteia para usuário final.
+O template antigo permanece bloqueado e não foi marcado `confirmed=true`.
 
 `request` é o corpo JSON confirmado. Substituições disponíveis em valores string:
 `{text}`, `{model}`, `{voice}`, `{format}`. Deve haver `{text}` no pedido.
@@ -74,6 +107,19 @@ parafraseado a prévia. Não promete leitura literal. Nunca registre o base64.
 
 O template é intencionalmente vazio e bloqueado. Testes cobrem o adaptador por
 HTTP simulado e não constituem integração de voz real.
+
+## Medições e fluidez
+
+O fluxo mantém uma chamada de chat e uma de síntese, quando voz habilitada.
+Mede `transcription_s`, `first_text_s`, `generation_s`, `synthesis_s`,
+`turn_to_playback_s`, `synthesis_end_to_playback_s` e, em entrada gravada,
+`recording_to_voice_s`. Início é o início local do stream de saída, não tempo
+perceptual certificado. A amostra isolada mede síntese e início da reprodução.
+Ausência de uma etapa não é registrada como zero.
+
+Não segmentamos frases nem aumentamos chamadas silenciosamente. O modelo upstream
+solicitado não estabelece streaming de áudio no gateway. Essa otimização exige
+contrato e medições reais, incluindo custo e cancelamento, antes de ser adotada.
 
 ## Alternativa local identificada
 
@@ -93,4 +139,5 @@ chamadas. Status 401, 402, 403, 413, 429 e falhas de rede têm mensagens locais.
 
 Nenhum modelo/provedor é trocado pelo cliente. Se o gateway rotear internamente,
 o modelo retornado será registrado quando informado; não se promete controle do
-roteamento interno. Nenhuma chamada paga foi feita durante a implementação.
+roteamento interno. A etapa 2 fez uma chamada autorizada e rejeitada com HTTP 400;
+nenhum uso/custo foi informado, portanto não se afirma débito nem custo zero.

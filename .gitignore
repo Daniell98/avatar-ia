@@ -5,6 +5,9 @@ __pycache__/
 .ruff_cache/
 .env
 api-key.txt
+elevenlabs-key.txt
+audio-validation.json
+*.mp3
 .claude/
 config.local.json
 *.sqlite3*

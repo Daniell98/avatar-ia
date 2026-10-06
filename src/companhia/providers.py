@@ -19,7 +19,16 @@ from .config import Settings
 
 
 class ProviderError(Exception):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        field: str | None = None,
+        detail: str | None = None,
+    ):
+        super().__init__(message)
+        self.status, self.field, self.detail = status, field, detail
 
 
 @dataclass
@@ -65,7 +74,7 @@ def http_error(status: int) -> ProviderError:
         429: "Limite de requisições atingido. Aguarde e tente manualmente.",
     }
     return ProviderError(
-        messages.get(status, f"O provedor retornou HTTP {status}. Confira modelo e contrato.")
+        messages.get(status, f"O provedor retornou HTTP {status}. Confira modelo e contrato."), status=status
     )
 
 

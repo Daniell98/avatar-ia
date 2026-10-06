@@ -12,6 +12,7 @@ class Tasks:
         self.generation = 0
         self.lock = threading.Lock()
         self.pending_or_running = False
+        self.proactive_running = False
         self.job = None
         self.stop_recording = threading.Event()
         self.editing = threading.Event()
@@ -36,8 +37,13 @@ class Tasks:
             self.generation += 1
             generation = self.generation
             self.pending_or_running = action is not None
+            self.proactive_running = proactive
         asyncio.run_coroutine_threadsafe(self._replace(generation, action), self.loop)
         return generation
+
+    def is_proactive(self):
+        with self.lock:
+            return self.pending_or_running and self.proactive_running
 
     async def _replace(self, generation, action):
         old = self.job
@@ -94,14 +100,12 @@ class Tasks:
                 self.editing.is_set(),
                 has_context,
             ):
-                generation = self.start(
+                self.start(
                     lambda generation, engine=engine: engine.turn(
                         generation, proactive=True, editing=self.editing.is_set
                     ),
                     proactive=True,
                 )
-                if generation is not None:
-                    engine.proactivity.started(time.monotonic())
 
     async def _shutdown(self):
         with self.lock:

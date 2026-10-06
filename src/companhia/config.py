@@ -33,6 +33,16 @@ class Settings:
     voice: str = ""
     audio_format: str = "wav"
     speech_contract: str = ""
+    eleven_base_url: str = "https://api.elevenlabs.io/v1"
+    eleven_model: str = "eleven_v4_turbo"
+    eleven_voice: str = ""
+    eleven_format: str = "mp3_44100_128"
+    # Estabilidade baixa dá variação emocional; alta soa uniforme e robótica.
+    eleven_stability: float = 0.4
+    eleven_similarity: float = 0.8
+    eleven_style: float = 0.3
+    eleven_speed: float = 1.0
+    eleven_speaker_boost: bool = True
     timeout: int = 60
     input_device: int | None = None
     output_device: int | None = None
@@ -53,10 +63,23 @@ class Settings:
     max_message_chars: int = 4000
 
     def validate(self) -> None:
-        if self.provider not in {"roteia", "mock"} or self.speech not in {"off", "windows", "contract"}:
+        if self.provider not in {"roteia", "mock"} or self.speech not in {
+            "off",
+            "windows",
+            "contract",
+            "roteia",
+            "eleven",
+        }:
             raise ValueError("Provedor ou voz inválidos.")
-        if not self.base_url.startswith("https://"):
+        if not self.base_url.startswith("https://") or not self.eleven_base_url.startswith("https://"):
             raise ValueError("A URL da API deve usar HTTPS.")
+        if self.speech == "eleven" and not self.eleven_voice.strip():
+            raise ValueError("Escolha uma voz da ElevenLabs antes de ativar essa saída.")
+        for key in ("eleven_stability", "eleven_similarity", "eleven_style"):
+            if not 0.0 <= getattr(self, key) <= 1.0:
+                raise ValueError(f"{key}: use um valor entre 0,0 e 1,0.")
+        if not 0.7 <= self.eleven_speed <= 1.2:
+            raise ValueError("eleven_speed: use um valor entre 0,7 e 1,2.")
         for key, low, high in [
             ("timeout", 5, 300),
             ("recording_seconds", 1, 120),
@@ -95,18 +118,39 @@ class Settings:
         temp.replace(folder / "config.json")
 
 
-def api_key(folder: Path) -> str:
-    return os.getenv("ROTEIA_API_KEY", "").strip() or (
-        (folder / "api-key.txt").read_text(encoding="utf-8").strip()
-        if (folder / "api-key.txt").exists()
-        else ""
+def _key(variable: str, folder: Path, file: str) -> str:
+    return os.getenv(variable, "").strip() or (
+        (folder / file).read_text(encoding="utf-8").strip() if (folder / file).exists() else ""
     )
+
+
+def api_key(folder: Path) -> str:
+    return _key("ROTEIA_API_KEY", folder, "api-key.txt")
+
+
+def elevenlabs_key(folder: Path) -> str:
+    return _key("ELEVENLABS_API_KEY", folder, "elevenlabs-key.txt")
 
 
 def personality_file(folder: Path) -> Path:
     target = folder / "personality.md"
     if not target.exists():
-        target.write_text(
-            (Path(__file__).parent / "resources/personality.md").read_text(encoding="utf-8"), encoding="utf-8"
-        )
+        target.write_text(default_personality(), encoding="utf-8")
     return target
+
+
+def default_personality() -> str:
+    return (Path(__file__).parent / "resources/personality.md").read_text(encoding="utf-8")
+
+
+def apply_default_personality(folder: Path, draft: str | None = None) -> Path:
+    """Aplicação explícita: preserva a versão anterior, inclusive personalizações."""
+    from datetime import UTC, datetime
+
+    target = personality_file(folder)
+    backup = folder / f"personality-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%f')}.bak.md"
+    backup.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
+    if draft is not None and draft != target.read_text(encoding="utf-8"):
+        backup.with_name(backup.name.replace(".bak.md", ".draft.bak.md")).write_text(draft, encoding="utf-8")
+    target.write_text(default_personality(), encoding="utf-8")
+    return backup

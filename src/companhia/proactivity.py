@@ -30,6 +30,24 @@ class Proactivity:
             and (not self.initiatives or time - self.initiatives[-1] >= self.interval)
         )
 
-    def started(self, time: float):
+    def attempted(self, time: float):
         self.initiatives.append(time)
+
+    def delivered(self):
         self.waiting_reply = True
+
+    def started(self, time: float):
+        """Compatibilidade: iniciar tentativa não significa que algo foi entregue."""
+        self.attempted(time)
+
+
+@dataclass
+class EditingActivity:
+    grace_seconds: float = 5
+    last_typing: float = float("-inf")
+
+    def typed(self, time: float):
+        self.last_typing = time
+
+    def blocked(self, time: float, draft: bool, protected: bool) -> bool:
+        return draft or protected or time - self.last_typing < self.grace_seconds

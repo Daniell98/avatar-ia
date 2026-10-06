@@ -4,13 +4,27 @@ Assistente desktop para Windows, em português brasileiro, criada a partir de
 `prompt_codex_assistente_voz_mvp.md`. Chat com streaming pela Roteia, memória local
 SQLite, gravação por turnos, transcrição por API, cancelamento e modo Companhia.
 
-**Estado da entrega:** núcleo e interface verificados com testes simulados.
-Chat e transcrição têm adaptadores HTTP reais, mas ainda não houve chamada
-autenticada de validação. A saída de voz da Roteia está **pendente de confirmação
-do contrato**: o catálogo informa a modalidade, mas não publica o schema completo
-consultado. A voz do Windows é uma alternativa local explícita. A experiência
-completa de voz por API ainda não está validada. Veja [contratos](docs/contratos.md)
+**Etapa 2:** pergunta atual garantida no contexto, proatividade corrigida, tom
+reversível, IDs persistentes migrados e adaptador específico de voz Roteia.
+O schema de áudio é fundamentado na documentação upstream, como **hipótese de
+compatibilidade**, e só é habilitado para conversa após uma amostra explícita
+validada no gateway. Não se confirma compatibilidade por testes simulados.
+A voz do Windows continua alternativa local. A experiência completa de voz
+ainda exige o roteiro manual. Veja [contratos](docs/contratos.md)
 e [validação](docs/validacao.md).
+
+**Etapa 3 — a voz funciona.** A saída de voz passou para a **ElevenLabs**, em
+pt-BR, com audição confirmada em conversa real. A Roteia segue responsável pelo
+chat de texto e pela transcrição.
+
+Motivo da troca: quatro amostras autenticadas na Roteia nunca entregaram áudio.
+A rota `openai/gpt-audio-mini` falha em toda configuração, inclusive no exemplo
+mínimo publicado por eles, enquanto um controle com `deepseek/deepseek-v4-flash`
+responde HTTP 200 — logo a chave e o saldo estão bons e o modelo é que não
+atende. O adaptador de voz da Roteia foi **preservado** e está correto conforme a
+especificação upstream (`stream: true` + `pcm16`); volta a ser utilizável se a
+rota deles for consertada. Evidência completa, decisões e pendências em
+[voz ElevenLabs](docs/voz-elevenlabs.md).
 
 ![Interface em modo simulado](docs/interface.png)
 
@@ -74,6 +88,12 @@ Personalidade pode ser alterada diretamente no arquivo, sem mudar código.
 O modelo lê esse arquivo a cada turno. O SQLite contém conteúdo pessoal em texto
 local; não há banco remoto, embeddings, captura de tela nem processamento na GPU.
 
+Instalações existentes mantêm sua personalidade. Use **Revisar padrão atualizado
+de personalidade** para ler/aplicar o novo padrão, com cópias do arquivo anterior
+e de um rascunho não salvo. **Tom pedido por você** permite voltar ao normal nas
+configurações; `menos zoeira` e `pode voltar a me zoar` também ajustam o tom entre
+sessões, sem classificar opiniões como `não gostei desse filme` como feedback.
+
 Para isolar uma instalação de teste, defina um caminho absoluto antes de iniciar:
 
 ```powershell
@@ -103,12 +123,41 @@ não detecção automática de fala; fale perto do microfone ou ajuste o disposi
 Áudio fica em memória e é descartado. A alternativa do Windows usa arquivos
 temporários removidos ao concluir/cancelar. Não há histórico de áudio bruto.
 
-**Voz por API:** escolha a opção somente após confirmar o contrato descrito em
-[docs/contratos.md](docs/contratos.md). O aplicativo não supõe `/audio/speech`
-nem envia parâmetros de áudio por analogia com outro serviço. Sem contrato, há
-aviso e a resposta textual é mantida; não ocorre troca automática para voz local.
+**Voz ElevenLabs (padrão em uso):** configure `ELEVENLABS_API_KEY` no `.env` e
+selecione **ElevenLabs · pt-BR** na aba Configurações. Os campos extras aparecem
+ao escolher essa opção: ID da voz, modelo e quatro controles de expressividade.
+
+A configuração validada por audição:
+
+| Campo | Valor |
+|---|---|
+| ID da voz | `4PNBmCCUBwRktp7B7R1y` (Larissa, pt-BR) |
+| Modelo | `eleven_v4_turbo` (custo 0.5x, menor latência) |
+| Estabilidade | 0.3 — **baixa dá variação emocional; alta soa robótica** |
+| Estilo | 0.4 |
+| Semelhança | 0.8 |
+
+Se a voz soar mecânica, baixe a estabilidade para 0.2 ou suba o estilo para 0.5
+pela interface, sem mexer em código. Para trocar de voz, há três alternativas
+pt-BR já na conta: `ptbr-Bea-acolhedora`, `ptbr-Beatriz-calorosa` e
+`ptbr-Larissa-brincalhona`. Latência medida: 1,23 a 1,61 s para 72 caracteres.
+O formato é MP3 44,1 kHz, que não exige plano pago específico e é decodificado
+localmente, então a reprodução não precisou de alteração. Detalhes e armadilhas
+da API em [voz ElevenLabs](docs/voz-elevenlabs.md).
+
+**Voz Roteia (bloqueada; rota indisponível no gateway):** salve o modelo `openai/gpt-audio-mini` e a voz `alloy` (ou vazio,
+que usa alloy), depois execute **Testar voz Roteia · uma amostra** na aba
+Diagnóstico, ou o comando abaixo. Uma amostra por execução, sem retry; pode gerar
+cobrança. A hipótese usa `chat/completions`, nunca `/audio/speech`. Não precisa
+preencher caminhos internos de JSON. Sem validação, a conversa preserva texto
+e avisa; não troca para Windows automaticamente.
 Quando a rota retorna texto e fala juntos, o texto associado à fala substitui a
 prévia no chat e no banco, preservando a correspondência.
+
+Uma amostra válida registra `audio-validation.json` na pasta de dados, com
+modelo, URL, voz e WAV observados. Mudar esses campos exige outra amostra. Esse
+registro comprova apenas resposta técnica decodificável e texto associado;
+naturalidade, fidelidade e audição precisam da sua avaliação.
 
 ## Memórias
 
@@ -131,10 +180,16 @@ Não existe extração automática que possa recriar memórias a partir delas.
 **Apagar histórico** remove mensagens e resumo, mantendo memórias duradouras e
 seus registros de origem. Se a mensagem original for apagada, o ID de origem
 continua sendo uma referência histórica, não uma mensagem ainda consultável.
+Os IDs não são reutilizados. A primeira abertura do esquema antigo cria uma
+cópia `.before-v2.bak` e migra as tabelas transacionalmente, preservando dados.
+Origens apagadas aparecem como **mensagem removida**, sem apontar para texto novo.
+O descarte conservador de tópicos anteriores ainda existe; a proposta para
+preservar assuntos independentes está em [memória e revisões](docs/memoria-revisoes.md).
 
 O contexto usa personalidade, até cinco memórias, trecho extrativo de até 2.000
-caracteres e até 12 mensagens recentes completas, com teto inicial de 18.000
-caracteres. Respostas interrompidas/incompletas ficam no histórico, mas não entram
+caracteres e até 12 mensagens recentes completas, incluindo a pergunta atual,
+com teto inicial de 18.000 caracteres. A pergunta tem prioridade; memórias e
+resumo são reduzidos quando necessário. Respostas interrompidas/incompletas não entram
 como respostas completas no contexto.
 
 ## Companhia, Foco e Pausado
@@ -142,9 +197,14 @@ como respostas completas no contexto.
 **Foco** responde quando chamado. **Companhia** precisa ser ativado na janela;
 espera 90 segundos após atividade, ao menos cinco minutos entre iniciativas,
 no máximo quatro solicitações por hora e uma sem resposta. A decisão de ficar
-em silêncio também ocupa essa tentativa para evitar sondagens pagas repetidas.
+em silêncio também ocupa uma tentativa para cooldown/limite, mas permite outra
+após o intervalo: só texto efetivamente publicado aguarda resposta. Erro e
+cancelamento antes da publicação também não criam espera indefinida.
 Só funciona com assunto registrado, sem gravação, geração, reprodução ou edição.
 A prioridade é sempre do usuário, com revalidação antes de publicar/falar.
+Rascunhos e os cinco segundos após digitação bloqueiam iniciativas; foco parado
+em editor vazio não bloqueia para sempre. Memórias, configurações e diálogos
+relevantes mantêm o bloqueio durante edição.
 
 **Pausado** interrompe o turno e impede novas gravações e chamadas. Ao reabrir,
 o aplicativo volta a Foco. O comando textual `fica em silêncio` muda para Foco
@@ -163,7 +223,8 @@ uv lock --check
 
 Testes bloqueiam HTTP real mesmo com uma chave no `.env`.
 A aba Diagnóstico mostra modelos solicitado/retornado, estado, uso informado e
-tempos medidos de transcrição, primeiro texto, geração e fim da gravação até voz.
+tempos medidos de transcrição, primeiro texto, geração, síntese, início local da
+reprodução e fim da gravação até voz.
 Ausência de medição significa que aquela etapa não foi medida. Não há promessa
 de latência. Erros são apresentados sem corpo bruto do provedor ou autorização.
 
@@ -173,9 +234,21 @@ gerar cobrança. Estes comandos **não foram executados automaticamente**:
 ```powershell
 uv run companhia diagnostico --real --text 'Responda em uma frase: olá, Companhia.'
 uv run companhia diagnostico --real --wav 'C:\caminho\amostra-curta.wav'
-# Apenas após confirmar e configurar o contrato de voz API:
-uv run companhia diagnostico --real --speech-text 'Olá, Daniel.'
+# Uma amostra explícita para testar a hipótese upstream; toca a voz para comparar:
+uv run companhia diagnostico --real --probe-audio --voice alloy --speech-text 'Olá, Daniel. Esta é uma amostra curta.'
+# Após essa configuração ter sido validada, usa o contrato observado:
+uv run companhia diagnostico --real --voice alloy --speech-text 'Olá, Daniel.'
+# Controles que isolam a causa de uma falha de voz na Roteia, uma amostra por execução:
+uv run companhia diagnostico --real --probe-stream-text
+uv run companhia diagnostico --real --probe-stream-text --no-stream
+uv run companhia diagnostico --real --probe-stream-text --no-stream --probe-model deepseek/deepseek-v4-flash
 ```
+
+Acrescente `--no-play` para validar sem reproduzir; o áudio é descartado. O texto
+associado aparece apenas para comparação, sem entrar no histórico/ledger da amostra.
+Não há síntese por frase nem streaming de áudio nesta entrega: aguardamos medições
+reais antes de alterar latência ou quantidade de chamadas. Testes simulados não
+justificam esse aumento de consumo.
 
 O diagnóstico de chat desliga voz para consumir só uma chamada. A amostra WAV
 deve conter fala, ter até 30 segundos e até 25 MB. Na interface, o teste real de
@@ -198,6 +271,11 @@ como desconhecido, nunca zero. Não há retry automático nem troca de modelo.
   instale uma voz pt-BR compatível com a síntese desktop; vozes OneCore nem
   sempre aparecem em `System.Speech`. Não há fallback silencioso.
 - **401 / 402 / 429:** revise chave, saldo ou limite no painel da Roteia.
+  Na ElevenLabs, 401 indica `ELEVENLABS_API_KEY` ausente ou inválida.
+- **Voz da Roteia falha:** rode os controles `--probe-stream-text` acima antes de
+  supor causa. Eles distinguem schema recusado, streaming quebrado, rota do
+  modelo indisponível e problema de conta. A mensagem do gateway aparece em
+  `gateway_detail`, sem chave nem conteúdo sensível.
   O app não faz novas tentativas por conta própria.
 - **Modelo incompatível/sem streaming:** copie um ID atual do catálogo e confira
   capacidades. Nenhum modelo é substituído automaticamente.
