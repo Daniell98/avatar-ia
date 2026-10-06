@@ -1,0 +1,9 @@
+{
+  "confirmed": false,
+  "evidence": "",
+  "endpoint": "chat/completions",
+  "format": "wav",
+  "request": {},
+  "audio_path": "",
+  "transcript_path": ""
+}

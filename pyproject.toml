@@ -1,0 +1,33 @@
+[project]
+name = "companhia"
+version = "0.1.0"
+description = "Assistente desktop por voz, com memória local e Roteia"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "PySide6>=6.8,<7", "httpx>=0.28,<0.29", "numpy>=2.2,<3",
+  "sounddevice>=0.5,<0.6", "soundfile>=0.13,<0.14",
+  "platformdirs>=4.3,<5", "python-dotenv>=1.1,<2",
+]
+
+[project.scripts]
+companhia = "companhia.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3,<10", "pytest-asyncio>=1,<2", "ruff>=0.12,<1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/companhia"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]

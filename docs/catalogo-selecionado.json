@@ -1,0 +1,131 @@
+﻿[
+    {
+        "id":  "deepseek/deepseek-v4-flash",
+        "modelType":  "text",
+        "endpoint":  "chat",
+        "provider":  "deepseek",
+        "providerName":  "DeepSeek",
+        "name":  "DeepSeek V4 Flash",
+        "description":  "DeepSeek V4 Flash, da DeepSeek, Ã© um modelo de linguagem disponÃ­vel pela API da Roteia. Suporta uso de ferramentas, JSON estruturado, resposta em streaming.",
+        "priceInBrlPerM":  0.630863,
+        "priceOutBrlPerM":  1.261726,
+        "cacheReadBrlPerM":  0.213596,
+        "cacheWriteBrlPerM":  null,
+        "pricingUnit":  "million_tokens",
+        "pricePerUnitBrl":  null,
+        "imagePriceEstimate":  null,
+        "longContextPricingBrl":  null,
+        "contextWindowTokens":  1000000,
+        "maxOutputTokens":  384000,
+        "capabilities":  {
+                             "audio":  false,
+                             "tools":  true,
+                             "vision":  false,
+                             "streaming":  true,
+                             "structuredOutputs":  true
+                         },
+        "modalities":  {
+                           "input":  [
+                                         "text"
+                                     ],
+                           "output":  [
+                                          "text"
+                                      ]
+                       },
+        "status":  "available",
+        "updatedAt":  "2026-10-06T02:25:27.424Z",
+        "availabilityCheckedAt":  "2026-10-06T02:25:27.424Z",
+        "rank":  170.2,
+        "rankReason":  "#3 da DeepSeek por uso de mercado nos Ãºltimos 7 dias.",
+        "marketRank":  10,
+        "marketProviderRank":  3,
+        "marketRankUpdatedAt":  "2026-10-06T02:25:27.424Z"
+    },
+    {
+        "id":  "openai/gpt-audio-mini",
+        "modelType":  "audio",
+        "endpoint":  "chat",
+        "provider":  "openai",
+        "providerName":  "OpenAI",
+        "name":  "GPT Audio Mini",
+        "description":  "GPT Audio Mini, da OpenAI, processa ou gera Ã¡udio pela API da Roteia. Suporta uso de ferramentas, JSON estruturado, resposta em streaming.",
+        "priceInBrlPerM":  4.271919,
+        "priceOutBrlPerM":  17.087676,
+        "cacheReadBrlPerM":  null,
+        "cacheWriteBrlPerM":  null,
+        "pricingUnit":  "million_tokens",
+        "pricePerUnitBrl":  null,
+        "imagePriceEstimate":  null,
+        "longContextPricingBrl":  null,
+        "contextWindowTokens":  128000,
+        "maxOutputTokens":  16384,
+        "capabilities":  {
+                             "audio":  true,
+                             "tools":  true,
+                             "vision":  false,
+                             "streaming":  true,
+                             "structuredOutputs":  true
+                         },
+        "modalities":  {
+                           "input":  [
+                                         "text",
+                                         "audio"
+                                     ],
+                           "output":  [
+                                          "text",
+                                          "audio"
+                                      ]
+                       },
+        "status":  "available",
+        "updatedAt":  "2026-10-06T02:25:27.424Z",
+        "availabilityCheckedAt":  "2026-10-06T02:25:27.424Z",
+        "rank":  138,
+        "rankReason":  "Recomendado por disponibilidade e tools, JSON estruturado.",
+        "marketRank":  361,
+        "marketProviderRank":  59,
+        "marketRankUpdatedAt":  "2026-10-06T02:25:27.424Z"
+    },
+    {
+        "id":  "openai/whisper-1",
+        "modelType":  "transcription",
+        "endpoint":  "transcriptions",
+        "provider":  "openai",
+        "providerName":  "OpenAI",
+        "name":  "Whisper 1",
+        "description":  "Whisper 1, da OpenAI, transforma Ã¡udio em texto pela API da Roteia.",
+        "priceInBrlPerM":  0,
+        "priceOutBrlPerM":  0,
+        "cacheReadBrlPerM":  null,
+        "cacheWriteBrlPerM":  null,
+        "pricingUnit":  "minute",
+        "pricePerUnitBrl":  0.042719,
+        "imagePriceEstimate":  null,
+        "longContextPricingBrl":  null,
+        "contextWindowTokens":  null,
+        "maxOutputTokens":  null,
+        "capabilities":  {
+                             "audio":  true,
+                             "tools":  false,
+                             "vision":  false,
+                             "streaming":  false,
+                             "structuredOutputs":  false
+                         },
+        "modalities":  {
+                           "input":  [
+                                         "audio",
+                                         "file"
+                                     ],
+                           "output":  [
+                                          "text"
+                                      ]
+                       },
+        "status":  "available",
+        "updatedAt":  "2026-10-06T02:25:27.424Z",
+        "availabilityCheckedAt":  "2026-10-06T02:25:27.424Z",
+        "rank":  117.8,
+        "rankReason":  "Recomendado pela disponibilidade para transcriÃ§Ã£o nesta conta.",
+        "marketRank":  631,
+        "marketProviderRank":  117,
+        "marketRankUpdatedAt":  "2026-10-06T02:25:27.424Z"
+    }
+]
